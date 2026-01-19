@@ -40,49 +40,21 @@ CHANNEL_ID = None  # Можно указать chat_id канала напрям
 # Ссылка на веб-приложение
 WEB_APP_LINK = 'https://tower-b0t-web.vercel.app/'
 
-# Пути к фотографиям (можно использовать локальные файлы или URL)
-# Примеры:
-# WELCOME_PHOTO = "images/welcome.jpg"  # Локальный файл
-# WELCOME_PHOTO = "https://example.com/image.jpg"  # URL из интернета
-# WELCOME_PHOTO = None  # Без фото
+# Пути к фотографиям - отключено (бот работает только с текстом)
+# Все фото установлены в None для работы без изображений
+WELCOME_PHOTO = None
+MAIN_MENU_PHOTO = None
+SUBSCRIPTION_PHOTO = None
+DEPOSIT_PHOTO = None
+SUCCESS_PHOTO = None
 
-# Используем абсолютные пути к фото
-BASE_IMAGES_DIR = os.path.join(os.path.dirname(__file__), "images")
-
-# Фото для приветствия
-WELCOME_PHOTO_PATH = os.path.join(BASE_IMAGES_DIR, "welcome.webp")
-WELCOME_PHOTO = WELCOME_PHOTO_PATH if os.path.exists(WELCOME_PHOTO_PATH) else None
-if not WELCOME_PHOTO:
-    logger.info("Фото приветствия не найдено, будет использоваться текстовое сообщение")
-
-# Фото для главного меню (приоритет: main_menu.webp > wiasa.webp)
-MAIN_MENU_PHOTO_PATH = os.path.join(BASE_IMAGES_DIR, "main_menu.webp")
-if not os.path.exists(MAIN_MENU_PHOTO_PATH):
-    MAIN_MENU_PHOTO_PATH = os.path.join(BASE_IMAGES_DIR, "wiasa.webp")
-MAIN_MENU_PHOTO = MAIN_MENU_PHOTO_PATH if os.path.exists(MAIN_MENU_PHOTO_PATH) else None
-if not MAIN_MENU_PHOTO:
-    logger.info("Фото главного меню не найдено, будет использоваться текстовое сообщение")
-
-# Фото для экрана подписки
-SUBSCRIPTION_PHOTO_PATH = os.path.join(BASE_IMAGES_DIR, "subscription.webp")
-SUBSCRIPTION_PHOTO = SUBSCRIPTION_PHOTO_PATH if os.path.exists(SUBSCRIPTION_PHOTO_PATH) else None
-
-# Фото для экрана депозита
-DEPOSIT_PHOTO_PATH = os.path.join(BASE_IMAGES_DIR, "deposit.webp")
-DEPOSIT_PHOTO = DEPOSIT_PHOTO_PATH if os.path.exists(DEPOSIT_PHOTO_PATH) else None
-
-# Фото для успешного подтверждения
-SUCCESS_PHOTO_PATH = os.path.join(BASE_IMAGES_DIR, "success.webp")
-SUCCESS_PHOTO = SUCCESS_PHOTO_PATH if os.path.exists(SUCCESS_PHOTO_PATH) else None
+logger.info("Режим работы: только текст (фото отключены)")
 
 # Инициализация бота и диспетчера
 # Настройки для стабильной работы на Render и других облачных платформах
-# session_timeout - базовый таймаут для HTTP клиента
-# request_timeout для long polling будет автоматически = session_timeout + polling_timeout
-# Это гарантирует, что HTTP клиент не разорвет соединение раньше, чем завершится long polling
 bot = Bot(
     token=BOT_TOKEN,
-    session_timeout=30  # Базовый таймаут для HTTP сессии (30 секунд)
+    session_timeout=30  # Таймаут для HTTP сессии (30 секунд)
 )
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
@@ -1746,16 +1718,41 @@ async def health_check(request):
     """Health check endpoint для мониторинга Render"""
     return web.json_response({'status': 'ok', 'service': 'tower-bot-telegram'})
 
-# Главная функция с обработкой ошибок и переподключением
+# Webhook endpoint для получения обновлений от Telegram
+async def webhook_handler(request):
+    """Обработка webhook запросов от Telegram"""
+    try:
+        # Получаем обновление от Telegram
+        update_data = await request.json()
+        logger.debug(f"Получено обновление от Telegram: {update_data}")
+        
+        # Создаем объект Update из полученных данных
+        update = types.Update(**update_data)
+        
+        # Передаем обновление в диспетчер для обработки
+        # В aiogram 3.x используется метод feed_update
+        await dp.feed_update(bot, update)
+        
+        # Возвращаем успешный ответ
+        return web.Response(status=200)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке webhook: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # Возвращаем 200, чтобы Telegram не повторял запрос
+        return web.Response(status=200)
+
+# Главная функция для работы с webhook
 async def main():
     # Инициализация базы данных
     init_db()
     
-    # Создаем HTTP сервер для API
+    # Создаем HTTP сервер для API и webhook
     app = web.Application()
     app.router.add_get('/', health_check)  # Health check для Render
     app.router.add_get('/health', health_check)  # Альтернативный health check
     app.router.add_post('/api/check_user', check_user_status)
+    app.router.add_post('/webhook', webhook_handler)  # Webhook endpoint для Telegram
     
     # Настраиваем CORS для работы с веб-приложением
     async def cors_middleware(app, handler):
@@ -1773,7 +1770,7 @@ async def main():
     
     app.middlewares.append(cors_middleware)
     
-    # Запускаем HTTP сервер в фоне
+    # Запускаем HTTP сервер
     # Используем переменную окружения PORT для облачных платформ (Render, Heroku и т.д.)
     # Если PORT не указан, используем 8080 для локальной разработки
     port = int(os.getenv('PORT', 8080))
@@ -1784,340 +1781,88 @@ async def main():
     site = web.TCPSite(runner, host, port)
     await site.start()
     
-    # Определяем URL для логирования
-    if port == 8080:
-        api_url = f"http://localhost:{port}"
-    else:
-        # Для облачных платформ URL будет известен после деплоя
-        api_url = f"http://0.0.0.0:{port}"
+    logger.info(f"HTTP сервер запущен на {host}:{port}")
     
-    logger.info(f"HTTP API сервер запущен на {api_url}")
+    # Определяем URL для webhook
+    # На Render URL формируется автоматически: https://<service-name>.onrender.com
+    # Можно использовать переменную окружения WEBHOOK_URL для явного указания
+    webhook_url = os.getenv('WEBHOOK_URL')
     
-    # Запуск бота с обработкой ошибок и автоматическим переподключением
-    retry_count = 0
-    max_retries = 10  # Увеличиваем количество попыток
-    retry_delay = 5  # секунд
-    consecutive_errors = 0
+    # Если URL не указан в переменных окружения, пытаемся определить автоматически
+    if not webhook_url:
+        if port == 8080:
+            # Локальная разработка - нужен ngrok или другой туннель
+            webhook_url = "http://localhost:8080/webhook"
+            logger.warning("⚠️ WEBHOOK_URL не указан. Используется localhost (для продакшена укажите WEBHOOK_URL в переменных окружения)")
+            logger.warning("⚠️ Для локальной разработки используйте ngrok или другой туннель для получения публичного HTTPS URL")
+        else:
+            # На Render URL формируется автоматически из имени сервиса
+            # Имя сервиса обычно берется из имени в render.yaml или можно указать в переменной окружения
+            service_name = os.getenv('RENDER_SERVICE_NAME', 'tower-bot-telegram')
+            webhook_url = f"https://{service_name}.onrender.com/webhook"
+            logger.info(f"📡 Webhook URL определен автоматически: {webhook_url}")
+            logger.info("💡 Для изменения URL укажите переменную окружения WEBHOOK_URL в Render Dashboard")
     
-    while True:
+    try:
+        # Проверяем, что бот работает
+        bot_info = await bot.get_me()
+        logger.info(f"✅ Бот подключен: @{bot_info.username} (ID: {bot_info.id})")
+        
+        # Удаляем старый webhook, если он был установлен
         try:
-            logger.info("Запуск бота...")
-            # Закрываем предыдущую сессию, если она была
-            try:
-                await bot.session.close()
-            except Exception as e:
-                logger.debug(f"Ошибка закрытия сессии (можно игнорировать): {e}")
-            
-            # Создаем новую сессию бота
-            try:
-                await bot.delete_webhook(drop_pending_updates=True)
-            except Exception as e:
-                logger.warning(f"Не удалось удалить webhook (можно игнорировать): {e}")
-            
-            # Проверяем, что бот работает
-            try:
-                bot_info = await bot.get_me()
-                logger.info(f"✅ Бот подключен: @{bot_info.username} (ID: {bot_info.id})")
-            except Exception as e:
-                logger.error(f"❌ Ошибка подключения к Telegram API: {e}")
-                raise
-            
-            logger.info("Бот запущен и готов к работе")
-            retry_count = 0  # Сбрасываем счетчик при успешном запуске
-            consecutive_errors = 0  # Сбрасываем счетчик последовательных ошибок
-            
-            # Переменные для отслеживания состояния polling (инициализируем здесь, чтобы были доступны в bot_health_monitor)
-            polling_active = {'status': True}
-            # Отслеживание времени последнего обновления
-            last_update_time = {'time': asyncio.get_event_loop().time()}
-            # Время запуска polling для профилактического перезапуска
-            polling_start_time = {'time': asyncio.get_event_loop().time()}
-            # Ссылка на polling task для возможности его отмены
-            polling_task_ref = {'task': None}
-            
-            # Middleware для отслеживания обновлений
-            @dp.update.outer_middleware()
-            async def update_tracker_middleware(handler, event, data):
-                # Обновляем время последнего обновления при получении любого обновления
-                current_time = asyncio.get_event_loop().time()
-                time_since_last = current_time - last_update_time['time']
-                last_update_time['time'] = current_time
-                # Логируем получение обновления (только если прошло больше минуты с последнего)
-                if time_since_last > 60:
-                    logger.info(f"📨 Получено обновление (тип: {event.__class__.__name__}), предыдущее было {time_since_last:.0f} сек назад")
-                return await handler(event, data)
-            
-            # Запускаем задачу для периодической проверки соединения и обновлений
-            async def bot_health_monitor():
-                """Периодическая проверка работоспособности бота и получения обновлений"""
-                consecutive_failures = 0
-                max_failures = 3
-                no_updates_timeout = 300  # 5 минут без обновлений = проблема (уменьшено с 10 минут)
-                connection_check_interval = 300  # Проверка соединения каждые 5 минут (даже если есть обновления)
-                preventive_restart_interval = 21600  # Профилактический перезапуск каждые 6 часов (для предотвращения проблем после длительного простоя)
-                last_connection_check = asyncio.get_event_loop().time()
-                
-                while polling_active['status']:
-                    try:
-                        await asyncio.sleep(180)  # Проверка каждые 3 минуты
-                        current_time = asyncio.get_event_loop().time()
-                        
-                        # Проверяем время работы polling для профилактического перезапуска
-                        polling_uptime = current_time - polling_start_time['time']
-                        if polling_uptime >= preventive_restart_interval:
-                            logger.info(f"⏰ Polling работает уже {polling_uptime/3600:.1f} часов. Профилактический перезапуск для предотвращения проблем после длительного простоя...")
-                            polling_active['status'] = False
-                            if polling_task_ref['task'] and not polling_task_ref['task'].done():
-                                logger.info("Отменяю polling task для профилактического перезапуска...")
-                                polling_task_ref['task'].cancel()
-                            raise ConnectionError(f"Preventive restart after {polling_uptime:.0f} seconds")
-                        
-                        # Проверяем, получает ли бот обновления
-                        time_since_last_update = current_time - last_update_time['time']
-                        
-                        if time_since_last_update > no_updates_timeout:
-                            logger.warning(f"⚠️ Нет обновлений {time_since_last_update:.0f} секунд ({time_since_last_update/60:.1f} минут). Возможно polling завис.")
-                            # Пробуем проверить соединение
-                            try:
-                                bot_info = await asyncio.wait_for(bot.get_me(), timeout=5)
-                                logger.info(f"✅ Соединение работает, но обновления не приходят. Перезапуск polling...")
-                            except asyncio.TimeoutError:
-                                logger.error("❌ Таймаут при проверке соединения. Перезапуск...")
-                            except Exception as e:
-                                logger.error(f"❌ Ошибка при проверке соединения: {e}")
-                            
-                            # Перезапускаем polling - устанавливаем флаг и отменяем polling task
-                            polling_active['status'] = False
-                            # Отменяем polling task если он существует
-                            if polling_task_ref['task'] and not polling_task_ref['task'].done():
-                                logger.info("Отменяю зависший polling task из health check...")
-                                polling_task_ref['task'].cancel()
-                            raise ConnectionError(f"No updates received for {time_since_last_update:.0f} seconds")
-                        
-                        # Проверяем соединение с ботом (каждые 5 минут или если нет обновлений)
-                        time_since_connection_check = current_time - last_connection_check
-                        should_check_connection = (time_since_connection_check >= connection_check_interval) or (time_since_last_update > 180)
-                        
-                        if should_check_connection:
-                            logger.info(f"🔍 Проверка соединения с Telegram API...")
-                            connection_ok = await ensure_bot_connection()
-                            last_connection_check = current_time
-                            
-                            if connection_ok:
-                                try:
-                                    bot_info = await bot.get_me()
-                                    logger.info(f"✅ Health check: бот работает, username: @{bot_info.username}, последнее обновление: {time_since_last_update:.0f} сек назад")
-                                    consecutive_failures = 0  # Сбрасываем счетчик при успехе
-                                except Exception as e:
-                                    consecutive_failures += 1
-                                    error_type = type(e).__name__
-                                    logger.warning(f"⚠️ Health check failed после восстановления соединения (попытка {consecutive_failures}/{max_failures}): {error_type}: {e}")
-                            else:
-                                consecutive_failures += 1
-                                logger.warning(f"⚠️ Health check failed - не удалось восстановить соединение (попытка {consecutive_failures}/{max_failures})")
-                                
-                                # Если несколько проверок подряд не удались, перезапускаем соединение
-                                if consecutive_failures >= max_failures:
-                                    logger.error("❌ Множественные ошибки health check. Перезапуск соединения...")
-                                    polling_active['status'] = False
-                                    # Прерываем polling для перезапуска
-                                    raise ConnectionError("Health check failed multiple times")
-                        else:
-                            # Просто логируем статус без проверки соединения
-                            logger.info(f"✅ Health check: последнее обновление: {time_since_last_update:.0f} сек назад")
-                    except asyncio.CancelledError:
-                        logger.info("Health check task cancelled")
-                        break
-                    except ConnectionError:
-                        # Это ожидаемая ошибка для перезапуска polling
-                        logger.warning("Health check обнаружил проблему - требуется перезапуск polling")
-                        polling_active['status'] = False
-                        raise
-                    except Exception as e:
-                        logger.error(f"❌ Критическая ошибка в health check: {e}")
-                        consecutive_failures += 1
-                        if consecutive_failures >= max_failures:
-                            polling_active['status'] = False
-                            raise ConnectionError(f"Health check critical error: {e}")
-            
-            # Запускаем health check в фоне
-            health_check_task = asyncio.create_task(bot_health_monitor())
-            
-            logger.info("🔄 Начинаю polling...")
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.info("🗑️ Старый webhook удален")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось удалить старый webhook (можно игнорировать): {e}")
+        
+        # Устанавливаем новый webhook
+        try:
+            await bot.set_webhook(
+                url=webhook_url,
+                drop_pending_updates=True,
+                allowed_updates=dp.resolve_used_update_types()
+            )
+            logger.info(f"✅ Webhook установлен: {webhook_url}")
             logger.info(f"📋 Зарегистрировано обработчиков: {len(dp.message.handlers)} сообщений, {len(dp.callback_query.handlers)} callback")
-            logger.info("⚙️ Настройки для работы на Render:")
-            logger.info("   • Long polling с таймаутом 60 секунд")
-            logger.info("   • Автоматический перезапуск при отсутствии обновлений > 5 минут")
-            logger.info("   • Профилактический перезапуск каждые 6 часов")
-            logger.info("   • Health check endpoint: /health")
             
-            # Сбрасываем время последнего обновления при запуске
-            last_update_time['time'] = asyncio.get_event_loop().time()
-            polling_start_time['time'] = asyncio.get_event_loop().time()
-            logger.info("⏱️ Отслеживание обновлений активировано:")
-            logger.info("   • Автоматический перезапуск при отсутствии обновлений более 5 минут")
-            logger.info("   • Профилактический перезапуск каждые 6 часов для предотвращения проблем после длительного простоя")
+            # Проверяем статус webhook
+            webhook_info = await bot.get_webhook_info()
+            logger.info(f"📡 Статус webhook: URL={webhook_info.url}, pending_updates={webhook_info.pending_update_count}")
             
-            # Запуск polling с обработкой ошибок и таймаутами
-            polling_task = None
-            try:
-                # Настройки polling для стабильной работы на Render
-                # polling_timeout - время ожидания обновлений от Telegram (long polling)
-                # Рекомендуется 20-60 секунд для баланса между отзывчивостью и стабильностью
-                # На Render лучше использовать большее значение для предотвращения таймаутов
-                polling_timeout = 60  # 60 секунд - оптимально для Render
-                
-                # limit - количество обновлений за один запрос (1-100)
-                # Больше обновлений = меньше запросов, но больше нагрузка
-                polling_limit = 100  # Максимум для эффективности
-                
-                logger.info(f"📋 Настройки polling:")
-                logger.info(f"   • polling_timeout: {polling_timeout} сек")
-                logger.info(f"   • session_timeout: {bot.session.timeout} сек")
-                logger.info(f"   • limit: {polling_limit} обновлений за запрос")
-                logger.info(f"   • allowed_updates: {dp.resolve_used_update_types()}")
-                
-                # Создаем задачу для polling с возможностью отмены
-                polling_task = asyncio.create_task(
-                    dp.start_polling(
-                        bot,
-                        polling_timeout=polling_timeout,  # Таймаут для long polling
-                        limit=polling_limit,  # Количество обновлений за запрос
-                        allowed_updates=dp.resolve_used_update_types(),
-                        close_bot_session=False,  # Не закрываем сессию автоматически
-                        drop_pending_updates=True  # Удаляем ожидающие обновления при старте
-                    )
-                )
-                # Сохраняем ссылку на task для health check
-                polling_task_ref['task'] = polling_task
-                
-                # Ждем завершения polling или его отмены
-                await polling_task
-            except asyncio.CancelledError:
-                logger.info("Polling был отменен")
-                polling_active['status'] = False
-                # Очищаем ссылку на polling task
-                polling_task_ref['task'] = None
-                # Отменяем polling task если он еще работает
-                if polling_task and not polling_task.done():
-                    polling_task.cancel()
-                    try:
-                        await polling_task
-                    except asyncio.CancelledError:
-                        pass
-                raise
-            except Exception as polling_error:
-                error_type = type(polling_error).__name__
-                logger.error(f"❌ Ошибка polling: {error_type}: {polling_error}")
-                polling_active['status'] = False
-                # Очищаем ссылку на polling task
-                polling_task_ref['task'] = None
-                # Отменяем polling task если он еще работает
-                if polling_task and not polling_task.done():
-                    logger.info("Отменяю зависший polling task...")
-                    polling_task.cancel()
-                    try:
-                        await asyncio.wait_for(polling_task, timeout=5)
-                    except (asyncio.CancelledError, asyncio.TimeoutError):
-                        pass
-                # Отменяем health check task
-                try:
-                    health_check_task.cancel()
-                except:
-                    pass
-                raise
-            
+        except Exception as e:
+            logger.error(f"❌ Ошибка установки webhook: {e}")
+            raise
+        
+        logger.info("🎉 Бот запущен и готов к работе с webhook!")
+        logger.info("⚙️ Настройки для работы на Render:")
+        logger.info("   • Webhook вместо polling")
+        logger.info("   • Health check endpoint: /health")
+        logger.info("   • Webhook endpoint: /webhook")
+        
+        # Запускаем сервер на неопределенное время
+        try:
+            await asyncio.Future()  # Бесконечное ожидание
         except KeyboardInterrupt:
             logger.info("Получен сигнал остановки. Завершение работы...")
-            polling_active['status'] = False
-            # Отменяем health check task
-            try:
-                health_check_task.cancel()
-                await health_check_task
-            except:
-                pass
-            break
-        except asyncio.CancelledError:
-            logger.warning("Задача была отменена. Перезапуск...")
-            polling_active['status'] = False
-            # Отменяем health check task
-            try:
-                health_check_task.cancel()
-            except:
-                pass
-            await asyncio.sleep(retry_delay)
-            continue
-        except (ConnectionError, TimeoutError, asyncio.TimeoutError) as e:
-            retry_count += 1
-            consecutive_errors += 1
-            error_type = type(e).__name__
-            error_msg = f"Сетевая ошибка при работе бота (попытка {retry_count}/{max_retries}): {error_type}: {e}"
-            logger.error(error_msg)
-            
-            polling_active['status'] = False
-            # Отменяем health check task
-            try:
-                health_check_task.cancel()
-            except:
-                pass
-            
-            # Переподключаемся используя функцию восстановления соединения
-            connection_restored = await ensure_bot_connection()
-            if not connection_restored:
-                logger.error("Не удалось восстановить соединение после сетевой ошибки")
-            
-            retry_delay = min(retry_delay * 1.5, 30)  # Меньшая задержка для сетевых ошибок
-            
-            if retry_count >= max_retries:
-                logger.error("Достигнуто максимальное количество попыток переподключения. Завершение работы.")
-                break
-            
-            import traceback
-            logger.error(traceback.format_exc())
-            logger.info(f"Повторная попытка через {retry_delay:.1f} секунд...")
-            await asyncio.sleep(retry_delay)
-            continue
+        
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
+    finally:
+        # Удаляем webhook при остановке
+        try:
+            await bot.delete_webhook()
+            logger.info("🗑️ Webhook удален при остановке")
         except Exception as e:
-            retry_count += 1
-            consecutive_errors += 1
-            error_type = type(e).__name__
-            error_msg = f"Ошибка при работе бота (попытка {retry_count}/{max_retries}): {error_type}: {e}"
-            logger.error(error_msg)
-            
-            polling_active['status'] = False
-            # Отменяем health check task
-            try:
-                health_check_task.cancel()
-            except:
-                pass
-            
-            # Обработка конкретных типов ошибок
-            if "Unauthorized" in error_type or "Forbidden" in error_type:
-                logger.error("Ошибка авторизации! Проверьте токен бота.")
-                break  # Критическая ошибка - останавливаем бота
-            else:
-                retry_delay = min(retry_delay * 2, 60)  # Экспоненциальная задержка
-            
-            # Если слишком много последовательных ошибок, увеличиваем задержку
-            if consecutive_errors >= 3:
-                retry_delay = min(retry_delay * 2, 120)
-                logger.warning(f"Много последовательных ошибок. Увеличиваем задержку до {retry_delay} сек.")
-            
-            if retry_count >= max_retries:
-                logger.error("Достигнуто максимальное количество попыток переподключения. Завершение работы.")
-                break
-            
-            import traceback
-            logger.error(traceback.format_exc())
-            logger.info(f"Повторная попытка через {retry_delay:.1f} секунд...")
-            await asyncio.sleep(retry_delay)
-        finally:
-            # Закрываем сессию при выходе из цикла
-            if not polling_active['status']:
-                try:
-                    await bot.session.close()
-                except:
-                    pass
+            logger.warning(f"⚠️ Ошибка удаления webhook: {e}")
+        
+        # Закрываем сессию бота
+        try:
+            await bot.session.close()
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка закрытия сессии: {e}")
 
 # Глобальный обработчик ошибок убран - используем встроенную обработку aiogram
 # Ошибки обрабатываются в каждом обработчике индивидуально
